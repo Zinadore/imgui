@@ -570,7 +570,7 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
             PS_INPUT main(VS_INPUT input)\
             {\
               PS_INPUT output;\
-              output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.f, 1.f));\
+              output.pos = mul( ProjectionMatrix, float4(input.pos.xy, 0.1f, 1.f));\
               output.col = input.col;\
               output.uv  = input.uv;\
               return output;\
@@ -735,6 +735,18 @@ void ImGui_ImplDX12_NewFrame()
 // If you are new to dear imgui or creating a new binding for dear imgui, it is recommended that you completely ignore this section first..
 //--------------------------------------------------------------------------------------------------------
 
+static void ImGui_ImplDX12_Flush(ImGuiViewportDataDx12* data)
+{
+    if (data == nullptr || data->CommandQueue == nullptr) {
+        // This window has already been released
+        return;
+    }
+
+    data->CommandQueue->Signal(data->Fence, ++data->FenceSignaledValue);
+    data->Fence->SetEventOnCompletion(data->FenceSignaledValue, data->FenceEvent);
+    ::WaitForSingleObject(data->FenceEvent, INFINITE);
+}
+
 static void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
 {
     ImGuiViewportDataDx12* data = IM_NEW(ImGuiViewportDataDx12)();
@@ -815,8 +827,7 @@ static void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         desc.NodeMask = 1;
 
-        HRESULT hr = g_pd3dDevice->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&data->RtvDescHeap));
-        IM_ASSERT(hr == S_OK);
+        IM_ASSERT(g_pd3dDevice->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&data->RtvDescHeap)) == S_OK);
 
         SIZE_T rtv_descriptor_size = g_pd3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = data->RtvDescHeap->GetCPUDescriptorHandleForHeapStart();
@@ -848,24 +859,13 @@ static void ImGui_ImplDX12_DestroyWindow(ImGuiViewport* viewport)
     // The main viewport (owned by the application) will always have RendererUserData == NULL since we didn't create the data for it.
     if (ImGuiViewportDataDx12* data = (ImGuiViewportDataDx12*)viewport->RendererUserData)
     {
-        // Wait for pending operations to complete to safely release objects below
-        HRESULT hr;
-        if (data->CommandQueue && data->Fence && data->FenceEvent)
-        {
-           hr = data->CommandQueue->Signal(data->Fence, ++data->FenceSignaledValue);
-           IM_ASSERT(hr == S_OK);
-           ::WaitForSingleObject(data->FenceEvent, 0); // Reset any forgotten waits
-           hr = data->Fence->SetEventOnCompletion(data->FenceSignaledValue, data->FenceEvent);
-           IM_ASSERT(hr == S_OK);
-           ::WaitForSingleObject(data->FenceEvent, INFINITE);
-        }
-
+        ImGui_ImplDX12_Flush(data);
         SafeRelease(data->CommandQueue);
         SafeRelease(data->CommandList);
         SafeRelease(data->SwapChain);
         SafeRelease(data->RtvDescHeap);
         SafeRelease(data->Fence);
-        ::CloseHandle(data->FenceEvent);
+        ::CloseHandle(data->FenceEvent); 
         data->FenceEvent = NULL;
 
         for (UINT i = 0; i < g_numFramesInFlight; i++)
@@ -883,6 +883,7 @@ static void ImGui_ImplDX12_DestroyWindow(ImGuiViewport* viewport)
 static void ImGui_ImplDX12_SetWindowSize(ImGuiViewport* viewport, ImVec2 size)
 {
     ImGuiViewportDataDx12* data = (ImGuiViewportDataDx12*)viewport->RendererUserData;
+    ImGui_ImplDX12_Flush(data);
 
     for (UINT i = 0; i < g_numFramesInFlight; i++)
         SafeRelease(data->FrameCtx[i].RenderTarget);
